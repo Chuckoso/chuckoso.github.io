@@ -62,6 +62,19 @@ class BRIDGE_OT_SendToMaya(bpy.types.Operator):
             self.report({'ERROR'}, "Object has no session data.")
             return {'CANCELLED'}
 
+        # IMPORTANTE: Guardar el nombre actual del objeto
+        current_name = obj.name
+        
+        # Temporalmente renombrar el objeto al nombre original de Maya
+        # Esto asegura que el FBX lo exporte con el nombre correcto
+        try:
+            obj.name = object_name
+            print(f"[Bridge] Temporarily renamed object to: {object_name}")
+        except:
+            # Si no se puede renombrar (nombre duplicado), crear una copia temporal
+            self.report({'WARNING'}, f"Could not rename to {object_name}, using current name")
+            object_name = current_name
+
         filename = f"{scene_name}_{object_name}_fromBlender.fbx"
         path = os.path.join(TEMP_DIR, filename)
 
@@ -70,7 +83,16 @@ class BRIDGE_OT_SendToMaya(bpy.types.Operator):
             self.report({'INFO'}, f"Exported FBX: {path}")
         except Exception as e:
             self.report({'ERROR'}, f"FBX export failed: {e}")
+            # Restaurar nombre original antes de fallar
+            obj.name = current_name
             return {'CANCELLED'}
+        
+        # Restaurar el nombre original del objeto en Blender
+        try:
+            obj.name = current_name
+            print(f"[Bridge] Restored object name to: {current_name}")
+        except:
+            pass
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -85,6 +107,37 @@ class BRIDGE_OT_SendToMaya(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to connect to Maya on port {MAYA_PORT}: {e}")
             return {'CANCELLED'}
 
+class BRIDGE_OT_RestoreMayaName(bpy.types.Operator):
+    bl_idname = "bridge.restore_maya_name"
+    bl_label = "Restore Maya Name"
+    bl_description = "Restore the original Maya name for the selected object"
+
+    def execute(self, context):
+        selected = context.selected_objects
+        if not selected:
+            self.report({'WARNING'}, "No object selected.")
+            return {'CANCELLED'}
+
+        obj = selected[0]
+        maya_name = obj.get("maya_object", None)
+        
+        if not maya_name:
+            self.report({'WARNING'}, "Object has no Maya name stored.")
+            return {'CANCELLED'}
+        
+        if obj.name == maya_name:
+            self.report({'INFO'}, f"Object already has the correct name: {maya_name}")
+            return {'FINISHED'}
+        
+        try:
+            old_name = obj.name
+            obj.name = maya_name
+            self.report({'INFO'}, f"Restored name from '{old_name}' to '{maya_name}'")
+            return {'FINISHED'}
+        except:
+            self.report({'ERROR'}, f"Could not restore name to '{maya_name}' (probably already exists)")
+            return {'CANCELLED'}
+
 class BRIDGE_PT_MainPanel(bpy.types.Panel):
     bl_label = "Maya Bridge"
     bl_idname = "BRIDGE_PT_main_panel"
@@ -95,19 +148,43 @@ class BRIDGE_PT_MainPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         col = layout.column()
+        
+        # Connection status
         row = col.row()
         row.operator("bridge.connect_to_maya", icon="LINKED")
         status = context.scene.bridge_connected
         row = col.row()
         row.label(text="Connected" if status else "Not Connected",
                   icon='CHECKMARK' if status else 'CANCEL')
+        
         col.separator()
+        
+        # Send to Maya
         col.operator("bridge.send_to_maya", icon="EXPORT")
+        
+        # Object info section
+        if context.selected_objects:
+            obj = context.selected_objects[0]
+            maya_scene = obj.get("maya_scene", None)
+            maya_object = obj.get("maya_object", None)
+            
+            if maya_scene or maya_object:
+                col.separator()
+                box = col.box()
+                box.label(text="Maya Session Info:", icon='INFO')
+                if maya_scene:
+                    box.label(text=f"Scene: {maya_scene}")
+                if maya_object:
+                    box.label(text=f"Object: {maya_object}")
+                    if obj.name != maya_object:
+                        box.label(text=f"Current: {obj.name}", icon='ERROR')
+                        box.operator("bridge.restore_maya_name", icon='FILE_REFRESH')
 
 classes = (
     BRIDGE_PT_MainPanel,
     BRIDGE_OT_ConnectToMaya,
     BRIDGE_OT_SendToMaya,
+    BRIDGE_OT_RestoreMayaName,  # Nuevo operador
 )
 
 def register():
